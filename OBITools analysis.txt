@@ -1,0 +1,447 @@
+################# Bat Diets OBITools Pipeline #############
+######### Melissa Ingala (mingala@amnh.org)
+######### 24 February 2020
+
+# INSTALL OBITOOLS, DATA PRE PROCESSING & TAXONOMIC DATABASE GENERATION
+
+#Install latest OBITools in conda environment (required: python 2.7)
+
+## create a virtual env with python 2.7
+mkdir OBI
+cd OBI
+conda create -n OBI-env python=2.7
+
+## get and extract the source
+wget 'https://git.metabarcoding.org/obitools/obitools/repository/archive.tar.gz?ref=master'
+tar -zxvf "archive.tar.gz?ref=master"
+
+## last sphinx version has a problem, install one that is OK
+pip install sphinx==1.4.8
+
+## enter the source folder
+cd obitools-master-*
+
+## build the package
+python setup.py build
+
+## install it in the virtual env
+python setup.py install
+
+## leave the virtualenv
+deactivate
+
+## add this line in your .bashrc
+## to enable the OBITools
+
+export PATH=${PATH}:"~/OBI/OBI-env/bin"
+
+#################### BUILD DATABASES #########################
+
+source activate OBI-env
+
+####### NCBI Taxonomy
+
+mkdir TAXO
+wget ftp://ftp.ncbi.nlm.nih.gov/pub/taxonomy/new_taxdump/new_taxdump.tar.gz
+
+gunzip new_taxdump.tar.gz
+untar new_taxdump.tar.gz
+
+# format for OBITools
+
+obitaxonomy -t TAXO -d TAXO
+
+######## EMBL database
+cd /home/mingala/array1/Bat_diets/EMBL/
+
+#first make EMBL database by downloading entire db and the NCBI taxonomy
+# Note: this is a huge amount of data and this process takes a long time, recommend dwnload over screen virtual terminal
+wget ftp.ebi.ac.uk/pub/databases/ena/sequence/release/std/*dat.gz
+
+#Convert the Database to EcoPCR format
+obiconvert --embl -t ../TAXO/ --ecopcrdb-output=embl_141 /home/mingala/array1/Bat_diets/EMBL/*.dat.gz --skip-on-error
+
+############## In-silico PCR to pull out just the target loci from DB
+
+cd embl_141/ 
+
+#16S (unrestricted)
+ecoPCR -d embl_141 -e 3 -l 36 -L 80 -r 6656 -c CCAACATCGAGGTCRYAA ARTTACYNTAGGGATAACAG > new_refdbs/NEWinverts.seqs
+
+#trnL (unrestricted)
+ecoPCR -d embl_141 -e 3 -l 30 -L 120 -c GGGCAATCCTGAGCCAA CCATTGAGTCTCTGCACCTATC  > new_refdbs/NEWplants.seqs
+        
+#12S (unrestricted)
+ecoPCR -d embl_141 -e 3 -l 50 -L 150 -c TTAGATACCCCACTATGC TAGAACAGGCTCCTCTAG  > new_refdbs/NEWvertebrates.seqs
+
+######convert to fasta format each reference library
+cd ..
+
+obiconvert --ecopcr --fasta-output \
+  NEWinverts.seqs > inverts_ref_db.fasta
+# 361,370 sequences
+
+obiconvert --ecopcr --fasta-output \
+  NEWplants.seqs > plants_ref_db.fasta
+# 275,653 sequences
+
+obiconvert --ecopcr --fasta-output \
+  NEWvertebrates.seqs > verts_ref_db.fasta
+# 318,481 sequences
+
+######################### PROCESS SEQUENCES #####################################
+
+#########These data are DEMUX, with primers and barcodes removed
+
+source activate OBI-Env
+
+#########STEP 1: Align & reconstruct paired-end reads
+## Want to run:
+	#illuminapairedend --score-min=10 -r Sample1_R2_001.clean3.fastq Sample1_R1_001.clean3.fastq > Sample1.fastq
+
+#########STEP 1: Align & reconstruct paired-end reads
+## Want to run:
+	#illuminapairedend --score-min=10 -r Sample1_R2_001.fastq Sample1_R2_001.fastq > Sample1.fastq
+
+mkdir joined/
+
+pathF="/home/mingala/array1/Bat_diets/BatNov2019/forwards/" ## where files look like Sample1_R1_001.clean3.fastq
+
+pathR="/home/mingala/array1/Bat_diets/BatNov2019/reverses/" ## where files look like Sample1_R1_001.clean3.fastq
+
+#pathIllumina="path/where/running/illumina"
+
+cd $pathF
+
+for read1 in *.fastq; do 			## take out/add the "/" if this doesn't work
+	echo $read1
+	echo 'read1' 
+	
+	## removes "_L001_R1_001.fastq" from Sample1
+	basename=${read1%_L001_R1_001.fastq}
+	echo $basename
+	echo 'basename' 
+	
+	## adds fastq to whatever's left after taking off "_L001_R1_001.fastq"
+	outputname=${basename}.fastq
+	echo $outputname
+	echo 'outputname'
+	
+	## move to the reverse directory
+	cd $pathR 
+	
+	## picks up the file with the same prefix but the _R2_ suffix
+	read2=${read1%_L001_R1_001.fastq}_L001_R2_001.fastq 
+	echo $read2
+	echo 'read2'
+	
+	## move to parent directory 
+	cd ../joined
+
+	echo $pathR$read2
+	echo $pathF$read1
+	
+	illuminapairedend --score-min=10 -r $pathR$read2 $pathF$read1 > $outputname
+	echo $outputname
+	
+	## move to the forward directory
+	cd $pathF 
+	
+done;
+
+#########STEP 2: Remove unaligned sequences (where mode = "joined")
+
+#want to run obigrep -p 'mode!="joined"' Sample_name.fastq > Sample_name.ali.fastq
+
+mkdir aligned_reads
+
+path_aligned=/home/mingala/array1/Bat_diets/BatNov2019/joined/
+cd $path_aligned/
+
+for sample in *.fastq; do 		
+	echo $sample
+	echo 'sample' 
+	
+	## removes ".fastq" from Sample name
+	basename=${sample%.fastq}
+	echo $basename
+	echo 'basename' 
+	
+	## adds ali.fastq to whatever's left after taking off ".fastq"
+	outputname=${basename}.ali.fastq
+	echo $outputname
+	echo 'outputname'
+	
+	cd ../aligned_reads
+	echo $path_aligned$sample
+	
+	obigrep -p 'mode!="joined"' $path_aligned$sample > $outputname
+
+done;
+
+#count # reads in each aligned fastq file:
+for i in `ls  aligned_reads/*.fastq | sort`; do cat $i | echo $((`wc -l`/4)) ; done
+#5636
+#16026
+#24761
+#18317
+#26775
+#15846
+#10231
+#7731
+#18050
+#10249
+#51341
+#6272
+#10874
+#84
+#7133
+#44802
+#33829
+#49652
+#52814
+#5585
+#24456
+#178
+#73
+#119524
+#53708
+#74094
+#62
+#39775
+#5240
+#53158
+#175
+#4508
+#61627
+#10330
+#6012
+#5305
+#5346
+#53952
+#13572
+#7215
+#6749
+#2133
+#124659
+#30376
+#38993
+#18095
+#904
+#4803
+#27004
+#97
+#100054
+#53553
+#245990
+#24981
+#44290
+#54975
+#24444
+#10890
+#29610
+#44800
+#50222
+#13738
+#13568
+#9260
+#47398
+#29063
+#71364
+#22634
+#87
+#70863
+#16961
+#6325
+#17546
+#3357
+#58942
+#6350
+#67162
+#64940
+#7994
+#13668
+#43617
+
+#########STEP 3: We will skip the part where we assign sequences to sample; we have already demux seqs
+
+#########STEP 3': Add the sequence IDs to the reads
+
+mkdir aligned_annotated/
+# want to run obiannotate -S 'sample:s1' s1.ali.fastq > s1.ali.ann.fastq
+
+path_aligned=/home/mingala/array1/Bat_diets/BatNov2019/aligned_reads/
+cd $path_aligned/
+
+for sample in *.fastq; do 
+echo $sample
+echo 'sample' 
+
+## removes ".fastq" from Sample name
+basename=${sample%.fastq}
+echo $basename
+echo 'basename'
+
+## store sample ID (first 11 characters) for annotation of sequences
+sampleID=${sample:0:11}
+echo $sampleID
+echo sampleID 
+
+## adds ali.ann.fastq to whatever's left after taking off ".fastq"
+outputname=${sampleID}.ali.ann.fastq
+echo $outputname
+echo 'outputname'
+
+echo $path_aligned$sample
+echo /home/mingala/array1/Bat_diets/BatNov2019/aligned_annotated/$outputname
+
+command=" obiannotate -S 'sample:${sampleID}' $path_aligned$sample > /home/mingala/array1/Bat_diets/BatNov2019/aligned_annotated/$outputname"
+echo $command
+eval $command
+done;
+
+#########STEP 4': Now that all files are annotated with sampleID, we can merge all files together and perform operations on this single file
+#cat ‘file1’ ‘file2’ ‘file3’ > output
+cd aligned_annotated/
+cat *.fastq > bats.aligned.annotated.fastq
+
+mv bats.aligned.annotated.fastq ../
+
+#########STEP 4: DEREPLICATE READS
+
+mkdir dereplicated_reads/
+
+obiuniq -m sample bats.aligned.annotated.fastq > dereplicated_reads/bats.cat.ali.assigned.uniq.fasta
+#-m sample option is used to keep the information of the samples of origin for each unique sequence
+
+#now just keep the two key values added by this step; count and sample 
+cd dereplicated_reads/
+obiannotate -k count -k merged_sample bats.cat.ali.assigned.uniq.fasta > $$ ; mv $$ bats.cat.ali.assigned.uniq.fasta
+
+#########STEP 5: Denoise the data by first generating a count summary table
+obistat -c count bats.cat.ali.assigned.uniq.fasta |  \
+  sort -nk1 | head -20
+  
+#count 	 count_n	   total
+#1     	 280628    280628
+#2     	  20858     41716
+#3     	   8079     24237
+#4     	   4445     17780
+#5     	   2925     14625
+#6     	   2042     12252
+#7     	   1546     10822
+#8     	   1059      8472
+#9     	    922      8298
+#10    	    736      7360
+#11    	    590      6490
+#12    	    565      6780
+#13    	    446      5798
+#14    	    396      5544
+#15    	    348      5220
+#16    	    270      4320
+#17    	    305      5185
+#18    	    229      4122
+#19    	    242      4598
+
+#Keep only the sequences having a count greater than or equal to 2 and a length longer than 30 but shorter than 150 bp (largest fragment ~= 100 bp)
+obigrep -L 150 -l 30 -p 'count>=2' bats.cat.ali.assigned.uniq.fasta \
+    > bats.cat.ali.assigned.uniq.c2.L150.l30.fasta
+#after this step 46364 seqs left
+
+#########STEP 6: Clean the sequences for PCR/sequencing errors
+#we keep the head sequences (-H option) that are sequences with no variants with a count greater than 5% of their own count (-r 0.05 option)
+
+obiclean -s merged_sample -r 0.05 -H \
+  bats.cat.ali.assigned.uniq.c2.L150.l30.fasta > bats.cat.ali.assigned.uniq.c2.L150.l30.clean.fasta
+  
+#########STEP 7: Taxonomic assignment
+
+#remove duplicate taxids that will cause next step to fail
+obiannotate --uniq-id inverts_ref_db.fasta > inverts_unique_ref_db.fasta
+obiannotate --uniq-id plants_ref_db.fasta > plants_unique_ref_db.fasta
+obiannotate --uniq-id verts_ref_db.fasta > verts_unique_ref_db.fasta
+
+#remove any empty sequences that will cause obitag command to hang
+obigrep --lmin=1 inverts_unique_ref_db.fasta > inverts_final_refdb.fasta
+obigrep --lmin=1 plants_unique_ref_db.fasta > plants_final_refdb.fasta
+obigrep --lmin=1 verts_unique_ref_db.fasta > verts_final_refdb.fasta
+
+##############RUN EACH TAG SEPARATELY (it doesn't work on a merged dataset)
+
+ecotag -d /home/mingala/array1/Bat_diets/TAXO/TAXO -m 0.90 -R /home/mingala/array1/Bat_diets/embl_141/new_refdbs/plants_final_refdb.fasta bats.cat.ali.assigned.uniq.c2.L150.l30.clean.fasta >\
+PLNT.bats.cat.ali.assigned.uniq.c2.L150.l30.clean.tagged.fasta
+
+ecotag -d /home/mingala/array1/Bat_diets/TAXO/TAXO -m 0.90 -R /home/mingala/array1/Bat_diets/embl_141/new_refdbs/inverts_final_refdb.fasta bats.cat.ali.assigned.uniq.c2.L150.l30.clean.fasta >\
+INV.bats.cat.ali.assigned.uniq.c2.L150.l30.clean.tagged.fasta
+
+ecotag -d /home/mingala/array1/Bat_diets/TAXO/TAXO -m 0.90 -R /home/mingala/array1/Bat_diets/embl_141/new_refdbs/verts_final_refdb.fasta bats.cat.ali.assigned.uniq.c2.L150.l30.clean.fasta >\
+VRT.bats.cat.ali.assigned.uniq.c2.L150.l30.clean.tagged.fasta
+
+  
+#Tabulate
+#Remove useless attributes
+obiannotate  --delete-tag=scientific_name_by_db --delete-tag=obiclean_samplecount \
+  --delete-tag=obiclean_count --delete-tag=obiclean_singletoncount \
+  --delete-tag=obiclean_cluster --delete-tag=obiclean_internalcount \
+  --delete-tag=obiclean_head --delete-tag=taxid_by_db --delete-tag=obiclean_headcount \
+  --delete-tag=id_status --delete-tag=rank_by_db PLNT.bats.cat.ali.assigned.uniq.c2.L150.l30.clean.tagged.fasta > \
+  PLNT.bats.cat.ali.assigned.uniq.c2.L150.l30.clean.tagged.done.fasta
+
+  
+#Sort
+obisort -k count -r PLNT.bats.cat.ali.assigned.uniq.c2.L150.l30.clean.tagged.done.fasta >  \
+  PLNT.bats.cat.ali.assigned.uniq.c2.L150.l30.clean.tagged.done.sort.fasta
+
+#Tabulate
+obitab -o PLNT.bats.cat.ali.assigned.uniq.c2.L150.l30.clean.tagged.done.sort.fasta > \
+  PLNT.bats.cat.ali.assigned.uniq.c2.L150.l30.clean.tagged.done.sort.tab.txt
+  
+########### INVERTS
+obiannotate  --delete-tag=scientific_name_by_db --delete-tag=obiclean_samplecount \
+  --delete-tag=obiclean_count --delete-tag=obiclean_singletoncount \
+  --delete-tag=obiclean_cluster --delete-tag=obiclean_internalcount \
+  --delete-tag=obiclean_head --delete-tag=taxid_by_db --delete-tag=obiclean_headcount \
+  --delete-tag=id_status --delete-tag=rank_by_db INV.bats.cat.ali.assigned.uniq.c2.L150.l30.clean.tagged.fasta > \
+  INV.bats.cat.ali.assigned.uniq.c2.L150.l30.clean.tagged.done.fasta
+  
+obisort -k count -r INV.bats.cat.ali.assigned.uniq.c2.L150.l30.clean.tagged.done.fasta >  \
+  INV.bats.cat.ali.assigned.uniq.c2.L150.l30.clean.tagged.done.sort.fasta
+  
+obitab -o INV.bats.cat.ali.assigned.uniq.c2.L150.l30.clean.tagged.done.sort.fasta > \
+  INV.bats.cat.ali.assigned.uniq.c2.L150.l30.clean.tagged.done.sort.tsv
+
+############ VERTS
+
+obiannotate  --delete-tag=scientific_name_by_db --delete-tag=obiclean_samplecount \
+  --delete-tag=obiclean_count --delete-tag=obiclean_singletoncount \
+  --delete-tag=obiclean_cluster --delete-tag=obiclean_internalcount \
+  --delete-tag=obiclean_head --delete-tag=taxid_by_db --delete-tag=obiclean_headcount \
+  --delete-tag=id_status --delete-tag=rank_by_db VRT.bats.cat.ali.assigned.uniq.c2.L150.l30.clean.tagged.fasta > \
+  VRT.bats.cat.ali.assigned.uniq.c2.L150.l30.clean.tagged.done.fasta
+  
+obisort -k count -r VRT.bats.cat.ali.assigned.uniq.c2.L150.l30.clean.tagged.done.fasta >  \
+    VRT.bats.cat.ali.assigned.uniq.c2.L150.l30.clean.tagged.done.sort.fasta
+    
+obitab -o VRT.bats.cat.ali.assigned.uniq.c2.L150.l30.clean.tagged.done.sort.fasta > \
+  VRT.bats.cat.ali.assigned.uniq.c2.L150.l30.clean.tagged.done.sort.txt
+  
+  
+############### DOWNLOADED ALL TSVS FROM CUVIER ##############
+# Let's keep just the hits that have been assigned at least to order for each file
+# VRTs seems to have had no hits assigned, so forget that one for now
+
+awk -F "\t" '{ if ($173 != "NA") { print } }' INV.bats.cat.ali.assigned.uniq.c2.L150.l30.clean.tagged.done.sort.tsv > INV_order.tsv
+
+awk -F "\t" '{ if ($173 != "NA") { print } }' PLNT.bats.cat.ali.assigned.uniq.c2.L150.l30.clean.tagged.done.sort.tab.tsv > PLNT_order.tsv
+
+#Combine order-level datasets together (open in Excel to remove the header from the second file)
+cat PLNT_order.tsv INV_order.tsv > PLN_INV_ORDER.tsv
+
+############## FORMAT FOR PHYLOSEQ ######################
+#OTU Table
+cut -f 1,11-90,91 -d$'\t' FINAL_PLN_INV_ORDER.tsv > FINAL_MOTUs.tsv
+
+#Taxonomy Table
+awk -F "\t" 'BEGIN{OFS="\t";} {print $1,$92,$7,$9,$93,$3}' FINAL_PLN_INV_ORDER.tsv > TAXONOMY.tsv
+
+#Metadata has already been compiled for the samples (makes sure names match before importing to phyloseq)
