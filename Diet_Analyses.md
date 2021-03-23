@@ -1,16 +1,17 @@
-
-
-```r
 #Download and load packages
 #source('http://bioconductor.org/biocLite.R')
 #biocLite('phyloseq')
 library(phyloseq)
-#packageVersion("phyloseq")
+packageVersion("phyloseq")
 library("ggplot2")
 #packageVersion("ggplot2")
 library(vegan)
-
+library(microbiome)
+library(bipartite)
 setwd(dir = '/Users/mingala/Documents/Dissertation/Chapter2/Results 3.23.20/BatDiets3.24/')
+#install.packages("spaa")
+library(spaa)
+library(microbiomeSeq)
 
 #Import Feature table and metadata
 motu_table <-read.delim(file = "FINAL_MOTUs.tsv", sep = "\t", header = T, row.names = 1)
@@ -22,6 +23,9 @@ SAM<-sample_data(metadata)
 TAX<-tax_table(as.matrix(taxonomy))
 OTU<- otu_table(motu_table, taxa_are_rows=TRUE)
 physeq<-merge_phyloseq(OTU, TAX, SAM)
+
+summarize_phyloseq(physeq)
+sample_sums(physeq)
 
 ############ DECONTAM; REMOVE CONTAMINANTS USING INITIAL DNA CONCENTRATIONS ############
 require(ggplot2)
@@ -37,61 +41,14 @@ df$DNA_CONC <- sample_sums(physeq)
 df <- df[order(df$DNA_CONC),]
 df$Index <- seq(nrow(df))
 ggplot(data=df, aes(x=Index, y=DNA_CONC, color= Niche)) + geom_point()
-```
 
-![plot of chunk unnamed-chunk-1](figure/unnamed-chunk-1-1.png)
-
-```r
 #Detect contaminants by frequency
 pruned<- subset_samples(physeq = physeq, DNA_CONC != "NA")
 contamdf.freq <- isContaminant(pruned, method="frequency", conc="DNA_CONC")
-```
-
-```
-## Warning in isContaminant(pruned, method = "frequency", conc = "DNA_CONC"): Removed 4
-## samples with zero total counts (or frequency).
-```
-
-```r
 head(contamdf.freq)
-```
-
-```
-##                                                          freq prev    p.freq p.prev
-## M03636:43:000000000-BG4JM:1:1103:22475:7113_CONS  0.077653596   26 0.2145112     NA
-## M03636:43:000000000-BG4JM:1:1108:9536:15974_CONS  0.014170453    8 0.4242533     NA
-## M03636:43:000000000-BG4JM:1:1101:10306:5691_CONS  0.080642517   20 0.5890707     NA
-## M03636:43:000000000-BG4JM:1:1101:22443:3884_CONS  0.014501094    4 0.4704623     NA
-## M03636:43:000000000-BG4JM:1:1103:22156:18630_CONS 0.009634287    2 0.5164774     NA
-## M03636:43:000000000-BG4JM:1:1101:16195:2779_CONS  0.036906917    9 0.5582210     NA
-##                                                           p contaminant
-## M03636:43:000000000-BG4JM:1:1103:22475:7113_CONS  0.2145112       FALSE
-## M03636:43:000000000-BG4JM:1:1108:9536:15974_CONS  0.4242533       FALSE
-## M03636:43:000000000-BG4JM:1:1101:10306:5691_CONS  0.5890707       FALSE
-## M03636:43:000000000-BG4JM:1:1101:22443:3884_CONS  0.4704623       FALSE
-## M03636:43:000000000-BG4JM:1:1103:22156:18630_CONS 0.5164774       FALSE
-## M03636:43:000000000-BG4JM:1:1101:16195:2779_CONS  0.5582210       FALSE
-```
-
-```r
 table(contamdf.freq$contaminant)
-```
-
-```
-## 
-## FALSE  TRUE 
-##   811    15
-```
-
-```r
 head(which(contamdf.freq$contaminant))
-```
 
-```
-## [1]  63 155 163 170 172 218
-```
-
-```r
 #Remove all contaminants from the dataset and use this new phyloseq obj (noncontam) for all downstream analyses
 noncontam <- prune_taxa(!contamdf.freq$contaminant, pruned)
 
@@ -118,30 +75,44 @@ phyloseq_richness_filter <- function(physeq, mintaxa = 1){
 }  
 
 filtered<-phyloseq_richness_filter(physeq = noncontam, mintaxa = 4)
+sample.sums<-as.vector(sample_sums(filtered))
+median(sample.sums) #2630
+range(sample.sums)
 
 #Transform to relative abundance
 relative  = transform_sample_counts(filtered, function(OTU) OTU / sum(OTU))
 plot_bar(physeq = relative, fill = "order_name", facet_grid =~kingdom_name, x = "Binomen")
-```
 
-![plot of chunk unnamed-chunk-1](figure/unnamed-chunk-1-2.png)
-
-```r
 #Top 25 taxa
 #Barplot of top 25 OTUs
 Top25OTUs = names(sort(taxa_sums(filtered), TRUE)[1:25])
 comparetop25 = prune_taxa(Top25OTUs, filtered)
 relative  = transform_sample_counts(comparetop25, function(OTU) OTU / sum(OTU))
 plot_bar(physeq = relative, fill = "order_name", facet_grid =~kingdom_name, x = "Binomen")
-```
 
-```
-## Warning: Removed 100 rows containing missing values (position_stack).
-```
+batspecies<-filtered@sam_data$Binomen
+dupes<-duplicated(batspecies)
+filtered@sam_data$duplicated<-dupes
+multiple.spp.obs <- prune_samples(filtered@sam_data$duplicated==TRUE, filtered)
+multiple.spp.obs <- prune_samples(sample_sums(multiple.spp.obs)>=1, multiple.spp.obs)
 
-![plot of chunk unnamed-chunk-1](figure/unnamed-chunk-1-3.png)
+#Evaluate within-species variation
+library(microbiomeSeq)
+#select bat spp with multiple observations
+multispp<-table(filtered@sam_data$Binomen)
+multiple.spp.obs<-as.vector(names(which(multispp<2)))
+filtered2<-subset_samples(physeq = filtered, Binomen!="Artibeus_intermedius"& Binomen!="Bauerus_dubiaquercus"     
+                          & Binomen!= "Chrotopterus_auritus" & Binomen!= "Dermanura_phaeotis"        
+                          & Binomen!= "Gardnernycteris_crenulatum" & Binomen!="Mimon_cozumelae"           
+                          & Binomen!= "Mormoops_megalophylla" & Binomen!="Myotis_keasyi"             
+                          & Binomen!= "Trachops_cirrhosus")
+filtered2 <- taxa_level(physeq = filtered2,which_level = "order_name")
+relative<- transform_sample_counts(filtered2, function(OTU) OTU / sum(OTU))
+p<- plot_taxa(relative, grouping_column = "Binomen", method = 'hellinger', number.taxa = 10, filename = "LCBD_multispeciesobs.csv")
+pdf(file = "LCBD_multispp.pdf", width = 10, height = 5)
+p
+dev.off()
 
-```r
 #Agglomerate by species
 #Remove confidence from Tax table (messes up agglomeration)
 tax_table(filtered) <- tax_table(filtered)[,1:5]
@@ -153,73 +124,67 @@ relative.merged  = transform_sample_counts(mergedspp, function(OTU) OTU / sum(OT
 #p + geom_bar(aes(fill=order_name), stat="identity", position="stack")
 #dev.off()
 
+#Alpha diversity
+Obs.MOTU<-plot_richness(physeq = filtered, color = "Niche", measures = "Observed", x = "Binomen") + geom_boxplot(outlier.color = "black") + theme_bw() +
+  theme(axis.text.x = element_text(angle = 90))
+Obs.MOTU
+
+#Check correlation between # of species replicate & # MOTUs, controlling for outliers
+nobs<-as.data.frame(multispp)
+Obs.MOTU<-estimate_richness(mergedspp, measures = c("Observed", "Shannon"))
+Obs.MOTU$Var1<-rownames(Obs.MOTU)
+samplesize_testdr<-merge.data.frame(nobs, Obs.MOTU, by = "Var1")
+
+outliers <- boxplot(samplesize_testdr$Observed, plot=TRUE)$out
+outliers
+
+samplesize_testdr<-samplesize_testdr[-c(15, 17, 18), ]
+
+#Observed MOTUs
+cor.test(samplesize_testdr$Freq, samplesize_testdr$Observed, method = "kendall", exact = FALSE)
+plot(samplesize_testdr$Freq, samplesize_testdr$Observed)
+#tau=0.33, p = 0.03
+
+#Shannon diversity
+cor.test(samplesize_testdr$Freq, samplesize_testdr$Shannon, method = "kendall", exact = FALSE)
+#tau = 0.07, p = 0.64
+
 ############## DATA TRANSFORMATION AND ORDINATION #################
 #Center Log transform the data (don't rarefy)
 require(microbiome)
 physeq.trans<-microbiome::transform(filtered, "log10")
-```
-
-```
-## Warning in microbiome::transform(filtered, "log10"): OTU table contains zeroes. Using
-## log10(1 + x) transform.
-```
-
-```r
 physeq.trans<-subset_samples(physeq = physeq.trans, Niche!="Control")
+physeq.corr<-subset_samples(physeq = physeq.trans, Sample_ID!=52)
 
 funx.ord <- ordinate(
   physeq = physeq.trans, 
   method = "NMDS", 
   distance = "bray"
 )
-```
 
-```
-## Run 0 stress 0.1613339 
-## Run 1 stress 0.1644276 
-## Run 2 stress 0.1615984 
-## ... Procrustes: rmse 0.05901576  max resid 0.2495413 
-## Run 3 stress 0.160883 
-## ... New best solution
-## ... Procrustes: rmse 0.03962871  max resid 0.1468315 
-## Run 4 stress 0.1642467 
-## Run 5 stress 0.1608314 
-## ... New best solution
-## ... Procrustes: rmse 0.007578199  max resid 0.04628627 
-## Run 6 stress 0.1607892 
-## ... New best solution
-## ... Procrustes: rmse 0.0296131  max resid 0.1333369 
-## Run 7 stress 0.1605482 
-## ... New best solution
-## ... Procrustes: rmse 0.03196537  max resid 0.1298247 
-## Run 8 stress 0.1653758 
-## Run 9 stress 0.162219 
-## Run 10 stress 0.1618395 
-## Run 11 stress 0.1619474 
-## Run 12 stress 0.1630624 
-## Run 13 stress 0.1642081 
-## Run 14 stress 0.1655518 
-## Run 15 stress 0.1644304 
-## Run 16 stress 0.1643658 
-## Run 17 stress 0.1604105 
-## ... New best solution
-## ... Procrustes: rmse 0.02635508  max resid 0.1296647 
-## Run 18 stress 0.1648805 
-## Run 19 stress 0.162455 
-## Run 20 stress 0.1617708 
-## *** No convergence -- monoMDS stopping criteria:
-##      6: no. of iterations >= maxit
-##     14: stress ratio > sratmax
-```
+funx.ord.jac <- ordinate(
+  physeq = physeq.trans, 
+  method = "NMDS", 
+  distance = "jaccard"
+)
 
-```r
 # Calculate distance matrix
 study.bray <- phyloseq::distance(physeq.trans, method = "bray")
+study.jaccard<- phyloseq::distance(physeq.trans, method = "jaccard")
 
 # make a data frame from the sample_data
 sampledf <- data.frame(sample_data(physeq.trans))
 
+## Homogeneity of dispersion test
+beta <- betadisper(study.bray, sampledf$Niche, sqrt.dist = T)
+permutest(beta) #p = 0.001
+#May be due to differences in dispersion
+
+beta.jac <- betadisper(study.jaccard, sampledf$Niche, sqrt.dist = T)
+permutest(beta.jac) #p = 0.001
+
 require(viridis)
+pdf(file = "NMDS_Diet.pdf", width = 7, height = 5)
 plot_ordination(
   physeq = physeq.trans,
   ordination = funx.ord,
@@ -230,55 +195,27 @@ plot_ordination(
   geom_point(aes(color = Niche), size = 2.5) +
   scale_shape_manual(values = 0:7) +
   theme_bw() +
-  stat_ellipse() + geom_jitter() + 
-  geom_text(label=physeq.trans@sam_data$Binomen,
-    nudge_x = 0.25, nudge_y = 0.25,size = 2,
-    check_overlap = T)
-```
+  stat_ellipse() + geom_jitter()
+dev.off()
 
-```
-## Too few points to calculate an ellipse
-## Too few points to calculate an ellipse
-```
-
-```
-## Warning: Removed 2 rows containing missing values (geom_path).
-```
-
-![plot of chunk unnamed-chunk-1](figure/unnamed-chunk-1-4.png)
-
-```r
 ############# PERMANOVA OF DIET #############
 sampledf$Niche<-as.factor(sampledf$Niche)
 adonis(study.bray ~ Niche * Binomen + Family, data = sampledf)
-```
 
-```
-## 
-## Call:
-## adonis(formula = study.bray ~ Niche * Binomen + Family, data = sampledf) 
-## 
-## Permutation: free
-## Number of permutations: 999
-## 
-## Terms added sequentially (first to last)
-## 
-##           Df SumsOfSqs MeanSqs F.Model      R2 Pr(>F)    
-## Niche      3    2.6846 0.89487  2.3708 0.09014  0.001 ***
-## Binomen   20   11.6227 0.58114  1.5396 0.39025  0.001 ***
-## Residuals 41   15.4757 0.37746         0.51962           
-## Total     64   29.7830                 1.00000           
-## ---
-## Signif. codes:  0 '***' 0.001 '**' 0.01 '*' 0.05 '.' 0.1 ' ' 1
-```
-
-```r
 #           Df SumsOfSqs MeanSqs F.Model      R2 Pr(>F)    
 #Niche      3    2.6846 0.89487  2.3708 0.09014  0.001 ***
 #Binomen   20   11.6227 0.58114  1.5396 0.39025  0.001 ***
 #Residuals 41   15.4757 0.37746         0.51962           
-#Total     64   29.7830                 1.00000          
+#Total     64   29.7830                 1.00000    
 
+adonis(study.jaccard ~ Niche * Binomen + Family, data = sampledf)
+
+#            Df SumsOfSqs MeanSqs F.Model      R2 Pr(>F)    
+#Niche        3     2.322 0.77398  1.8645 0.07585  0.001 ***
+  #Binomen   20    11.271 0.56355  1.3576 0.36818  0.001 ***
+  #Residuals 41    17.020 0.41512         0.55597           
+#Total       64    30.613                 1.00000           
+---
 ################## BIPARTITE NETWORK AND FOOD WEB #####################
 ######## use package bipartite
 #install.packages('bipartite')
@@ -296,74 +233,47 @@ interactions<-as.matrix(merged.motus)
 #Visualize web
 #pdf(file = 'FinalBipartite Network.pdf', width = 16, height = 13)
 plotweb(sortweb(interactions, sort.order="inc"), text.rot = 90)
-```
-
-![plot of chunk unnamed-chunk-1](figure/unnamed-chunk-1-5.png)
-
-```r
 #dev.off()
 visweb(sortweb(interactions, sort.order="inc"))
-```
 
-![plot of chunk unnamed-chunk-1](figure/unnamed-chunk-1-6.png)
+#Null model comparison
+#To test network metrics (e.g. H2 specialization index) against the Vazquez null
+Iobs <- networklevel(web = interactions, index = "H2") #0.7652146
+nulls <- nullmodel(web=interactions, N=100, method='vaznull') # takes a while!
+Inulls <- sapply(nulls, networklevel, index="H2")
+plot(density(Inulls), xlim=c(0, 1), lwd=2, main="H'2")
+abline(v=Iobs, col="red", lwd=2)
 
-```r
+shapiro.test(Inulls) # p = 0.1527, not signif diff from normal distribution
+res <- t.test(Inulls, mu = 0.7652146) #One sample t-test comparing nulls to observed mean
+#t = -5520.4, df = 99, p-value < 2.2e-16
+
+######Shannon diversity comparison
+Shan.obs <- networklevel(web = interactions, index = "Shannon diversity") #3.054202
+Shan.nulls <- sapply(nulls, networklevel, index="Shannon diversity")
+plot(density(Inulls), xlim=c(0, 1), lwd=2, main="Shannon")
+abline(v=Iobs, col="red", lwd=2)
+
+shapiro.test(Shan.nulls) # p = 0.29
+t.test(Shan.nulls, mu = 3.054202)
+#t = 1439.8, df = 99, p-value < 2.2e-16
+
 #compute modularity
 mod <- computeModules(interactions)
 #pdf(file = 'Adjacency_Matrix.pdf', width = 7, height = 7)
 plotModuleWeb(mod, labsize = 0.5)
-```
-
-![plot of chunk unnamed-chunk-1](figure/unnamed-chunk-1-7.png)
-
-```r
 #dev.off()
 
 #Compute Shannon Richness to summarize dietary niche width
 Shannon<-estimate_richness(physeq = mergedspp, measures = c('Shannon', 'Observed'))
 Shannon
-```
 
-```
-##                            Observed   Shannon
-## Artibeus_intermedius              9 1.7764022
-## Artibeus_jamaicensis             43 0.6984114
-## Artibeus_lituratus               41 0.9807187
-## Bauerus_dubiaquercus             39 2.6697901
-## Carollia_perspicillata           30 0.8038310
-## Carollia_sowelli                 68 1.1337826
-## Chrotopterus_auritus             38 0.8218339
-## Dermanura_phaeotis               45 0.3254159
-## Dermanura_watsoni                37 0.8962527
-## Eptesicus_furinalis              47 0.8652175
-## Gardnernycteris_crenulatum        4 1.0626812
-## Glossophaga_soricina             25 1.4087635
-## Lophostoma_evotis                10 1.7231883
-## Mimon_cozumelae                  32 0.4773561
-## Molossus_nigricans              363 3.2279977
-## Mormoops_megalophylla            29 1.7012887
-## Myotis_elegans                  144 2.8399350
-## Myotis_keasyi                   148 2.7840347
-## Natalus_mexicanus                67 1.9685395
-## Pteronotus_mesoamericanus        45 1.6472794
-## Rhogeessa_aenaeus                45 0.3812481
-## Rhynchonycteris_naso             69 1.1321234
-## Sturnira_parvidens               38 0.3675559
-## Trachops_cirrhosus               15 0.4210451
-```
-
-```r
 #Add to metadata
 mergedspp@sam_data$Shannon<-Shannon$Shannon
 
 #PLot
 #pdf('Shannon_Obs.pdf', width = 7, height = 5)
 plot_richness(filtered, x="Binomen", measures=c("Observed", "Shannon")) + geom_boxplot()
-```
-
-![plot of chunk unnamed-chunk-1](figure/unnamed-chunk-1-8.png)
-
-```r
 #dev.off()
 
 #Check for correlation with isotopic data from Oelbaum et al 2019
@@ -372,58 +282,12 @@ Shan_SEAb<-read.csv(file = "shannon_obs_alpha.csv", header = T)
 #Shan_SEAb$Niche<-as.factor(mergedspp@sam_data$Niche)
 
 cor.test(Shan_SEAb$Shannon, Shan_SEAb$SEAb,  method = "pearson", use = "complete.obs")
-```
-
-```
-## 
-## 	Pearson's product-moment correlation
-## 
-## data:  Shan_SEAb$Shannon and Shan_SEAb$SEAb
-## t = 0.65073, df = 17, p-value = 0.5239
-## alternative hypothesis: true correlation is not equal to 0
-## 95 percent confidence interval:
-##  -0.3210467  0.5697606
-## sample estimates:
-##       cor 
-## 0.1558956
-```
-
-```r
 #t = 0.65073, df = 17, p-value = 0.5239, r=0.15 
 cor.test(Shan_SEAb$Observed, Shan_SEAb$SEAb,  method = "pearson", use = "complete.obs")
-```
-
-```
-## 
-## 	Pearson's product-moment correlation
-## 
-## data:  Shan_SEAb$Observed and Shan_SEAb$SEAb
-## t = 1.14, df = 17, p-value = 0.2701
-## alternative hypothesis: true correlation is not equal to 0
-## 95 percent confidence interval:
-##  -0.2135771  0.6428791
-## sample estimates:
-##       cor 
-## 0.2664834
-```
-
-```r
 #t = 1.14, df = 17, p-value = 0.2701, r=0.27
 
 # independent 2-group Mann-Whitney U Test
 wilcox.test(Shan_SEAb$Shannon, Shan_SEAb$SEAb) # where y and x are numeric
-```
-
-```
-## 
-## 	Wilcoxon rank sum test
-## 
-## data:  Shan_SEAb$Shannon and Shan_SEAb$SEAb
-## W = 81, p-value = 0.0001857
-## alternative hypothesis: true location shift is not equal to 0
-```
-
-```r
 #W = 81, p-value = 0.0001857
 
 require(cowplot)
@@ -437,47 +301,13 @@ Obs<-ggplot(Shan_SEAb, aes(x=Observed, y=SEAb)) +
   theme_bw()
 #pdf(file = "Shan_SEAb_corr.pdf", width = 7, height = 5)
 plot_grid(Sh, Obs, labels = "AUTO")
-```
-
-```
-## Warning: Removed 5 rows containing non-finite values (stat_smooth).
-```
-
-```
-## Warning: Removed 5 rows containing missing values (geom_point).
-```
-
-```
-## Warning: Removed 5 rows containing non-finite values (stat_smooth).
-```
-
-```
-## Warning: Removed 5 rows containing missing values (geom_point).
-```
-
-![plot of chunk unnamed-chunk-1](figure/unnamed-chunk-1-9.png)
-
-```r
 #dev.off()
 
 #Some other basic data summaries
 tax.df<-data.frame(filtered@tax_table)
 length(which(tax.df$kingdom_name == "Plants"))
-```
-
-```
-## [1] 194
-```
-
-```r
 length(which(tax.df$kingdom_name == "Invertebrates"))
-```
 
-```
-## [1] 617
-```
-
-```r
 #############Split dataset into bins of top taxa to show shallower differentiation#############
 
 ######### COLEOPTERA #############
@@ -494,11 +324,6 @@ beetle_interactions<-as.matrix(merged.beetle.motus)
 
 #pdf(file = 'Beetles_Bipartite_Network.pdf', width = 16, height = 13)
 plotweb(sortweb(beetle_interactions, sort.order="inc"), text.rot = 90)
-```
-
-![plot of chunk unnamed-chunk-1](figure/unnamed-chunk-1-10.png)
-
-```r
 #dev.off()
 
 ######### HEMIPTERA #############
@@ -515,11 +340,6 @@ bug_interactions<-as.matrix(merged.bug.motus)
 
 #pdf(file = 'Bugs_Bipartite_Network.pdf', width = 16, height = 13)
 plotweb(sortweb(bug_interactions, sort.order="inc"), text.rot = 90)
-```
-
-![plot of chunk unnamed-chunk-1](figure/unnamed-chunk-1-11.png)
-
-```r
 #dev.off()
 
 ######### Lepidoptera #############
@@ -536,11 +356,6 @@ moth_interactions<-as.matrix(merged.moth.motus)
 
 #pdf(file = 'Moths_Bipartite_Network.pdf', width = 16, height = 13)
 plotweb(sortweb(moth_interactions, sort.order="inc"), text.rot = 90)
-```
-
-![plot of chunk unnamed-chunk-1](figure/unnamed-chunk-1-12.png)
-
-```r
 #dev.off()
 
 ######### Diptera #############
@@ -557,11 +372,6 @@ fly_interactions<-as.matrix(merged.fly.motus)
 
 #pdf(file = 'Flies_Bipartite_Network.pdf', width = 16, height = 13)
 plotweb(sortweb(fly_interactions, sort.order="inc"), text.rot = 90)
-```
-
-![plot of chunk unnamed-chunk-1](figure/unnamed-chunk-1-13.png)
-
-```r
 #dev.off()
 
 ######### Plants #############
@@ -579,11 +389,6 @@ plants_interactions<-as.matrix(merged.pln.motus)
 
 #pdf(file = 'Plants_Bipartite_Network.pdf', width = 16, height = 13)
 plotweb(sortweb(plants_interactions, sort.order="inc"), text.rot = 90)
-```
-
-![plot of chunk unnamed-chunk-1](figure/unnamed-chunk-1-14.png)
-
-```r
 #dev.off()
 
 ###############Re-do Adjacency Plot for whole Community at Family Level############
@@ -599,35 +404,13 @@ family_interactions<-as.matrix(merged.fam.motus)
 #Visualize web
 #pdf(file = 'Family_Bipartite_Network.pdf', width = 16, height = 13)
 plotweb(sortweb(family_interactions, sort.order="inc"), text.rot = 90)
-```
-
-![plot of chunk unnamed-chunk-1](figure/unnamed-chunk-1-15.png)
-
-```r
 dev.off()
-```
-
-```
-## RStudioGD 
-##         2
-```
-
-```r
 visweb(sortweb(family_interactions, sort.order="inc"))
-```
 
-![plot of chunk unnamed-chunk-1](figure/unnamed-chunk-1-16.png)![plot of chunk unnamed-chunk-1](figure/unnamed-chunk-1-17.png)
-
-```r
 #compute modularity
 fam.mod <- computeModules(family_interactions)
 #pdf(file = 'Family_Adjacency_Matrix.pdf', width = 7, height = 7)
 plotModuleWeb(fam.mod, labsize = 0.1)
-```
-
-![plot of chunk unnamed-chunk-1](figure/unnamed-chunk-1-18.png)
-
-```r
 #dev.off()
 
 ###############Cluster species by diet#############
@@ -639,24 +422,32 @@ require(pvclust)
 dist<-distance(merged_bats_Fam, "bray", type = "samples")
 dist<-as.matrix(dist)
 result <- pvclust(dist, method.dist="cor", method.hclust="average", nboot=1000)
-```
-
-```
-## Bootstrap (r = 0.5)... Done.
-## Bootstrap (r = 0.58)... Done.
-## Bootstrap (r = 0.67)... Done.
-## Bootstrap (r = 0.79)... Done.
-## Bootstrap (r = 0.88)... Done.
-## Bootstrap (r = 1.0)... Done.
-## Bootstrap (r = 1.08)... Done.
-## Bootstrap (r = 1.17)... Done.
-## Bootstrap (r = 1.29)... Done.
-## Bootstrap (r = 1.38)... Done.
-```
-
-```r
 plot(result, print.pv = T)
-```
 
-![plot of chunk unnamed-chunk-1](figure/unnamed-chunk-1-19.png)
+############### CORRELATION WITH ISOTOPIC SEAb #####################
+#calculate Levin's niche breadth
+#first flip columns and rows of interaction matrix
+interactions.swap<-t(interactions)
+levins<-niche.width(interactions.swap, method = "levins")
+shannon<-niche.width(interactions.swap, method = "shannon")
+levins<-t(levins)
+levins<-as.data.frame(levins)
+shannon<-t(shannon)
+shannon<-as.data.frame(shannon)
 
+Oelbaum19<- read.csv("~/Documents/Bat_Diets/Niche breadth-2.csv", row.names = 1)
+SEAb<-as.matrix(as.array(Oelbaum19[,2]))
+rownames(SEAb)<-rownames(Oelbaum19)
+SEAb<-as.data.frame(SEAb)
+
+merged_nichebreadth<-merge(SEAb,levins ["V1"],by="row.names",all.x=TRUE)
+
+rownames(merged_nichebreadth)<-merged_nichebreadth$Row.names
+merged_nichebreadth<-setNames(merged_nichebreadth, c("Species", "SEAb", "Levins"))
+#remove species missing SEAb or Levins
+library(tidyr)
+merged_nichebreadth<-merged_nichebreadth %>% drop_na(Levins)
+
+#Nonparametric correlation
+cor.test(x = merged_nichebreadth$SEAb, y = merged_nichebreadth$Levins, method = "kendall")
+#T = 75, p-value = 0.9405
